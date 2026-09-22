@@ -19,6 +19,38 @@ if __name__ == '__main__':
 
     parser.add_argument("--save_path", type=str, default='examples/result.ply',
                         help="Path to save the output .ply file.")
+    parser.add_argument("--splat_path", type=str, default=None,
+                        help="Path to save 3D Gaussian Splatting splat.ply file (default: save_path with .splat.ply or splat.ply in output folder).")
+    parser.add_argument("--ply", action="store_true", default=True,
+                        help="Save 3D Gaussian Splatting splat.ply file.")
+    parser.add_argument("--ply_is_indoor", action="store_true", default=True,
+                        help="Indoor scene preset (default cutoff 15m).")
+    parser.add_argument("--ply_is_outdoor", dest="ply_is_indoor", action="store_false",
+                        help="Outdoor scene preset (default cutoff 80m).")
+    parser.add_argument("--ply_stride", type=int, default=1,
+                        help="Pixel sampling stride for splat generation (1=full res, 2=half res).")
+    parser.add_argument("--ply_scale", type=float, default=1.2,
+                        help="Global splat radius scale multiplier.")
+    parser.add_argument("--ply_thickness", type=float, default=0.2,
+                        help="Splat disc thickness ratio.")
+    parser.add_argument("--ply_min_depth", type=float, default=0.1,
+                        help="Minimum distance threshold in meters.")
+    parser.add_argument("--ply_max_depth", type=float, default=None,
+                        help="Maximum distance cutoff in meters.")
+    parser.add_argument("--maps", dest="save_maps", action="store_true", default=False,
+                        help="Generate ALL additional diagnostic maps (depth.exr/npy, points.exr/npy, camera_poses.npy/json, conf.npy/png).")
+    parser.add_argument("--save_depth_exr", action="store_true", default=False,
+                        help="Save depth maps as 32-bit floating point EXR files.")
+    parser.add_argument("--save_depth_npy", action="store_true", default=False,
+                        help="Save depth maps as numpy .npy array.")
+    parser.add_argument("--save_points_exr", action="store_true", default=False,
+                        help="Save 3D coordinate point maps as EXR files.")
+    parser.add_argument("--save_points_npy", action="store_true", default=False,
+                        help="Save points as numpy .npy array.")
+    parser.add_argument("--save_poses", action="store_true", default=True,
+                        help="Save camera poses as .npy and .json.")
+    parser.add_argument("--save_conf", action="store_true", default=False,
+                        help="Save confidence maps as .npy and .png.")
     parser.add_argument("--interval", type=int, default=-1,
                         help="Interval to sample image. Default: 1 for images dir, 10 for video")
     parser.add_argument("--ckpt", type=str, default=None,
@@ -126,10 +158,52 @@ if __name__ == '__main__':
     non_edge = ~depth_normal_edge(res['local_points'], rtol=0.03, mask=masks)
     masks = torch.logical_and(masks, non_edge)[0]
 
-    # 5. Save points
-    print(f"Saving point cloud to: {args.save_path}")
-    if os.path.dirname(args.save_path):
-        os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
-        
+    # 5. Save points & Splat PLY
+    out_dir = os.path.dirname(args.save_path) or '.'
+    os.makedirs(out_dir, exist_ok=True)
+
+    print(f"Saving standard point cloud to: {args.save_path}")
     write_ply(res['points'][0][masks].cpu(), imgs[0].permute(0, 2, 3, 1)[masks], args.save_path)
+
+    # 6. Save 3D Gaussian Splat PLY & Exports
+    from pi3_splat_utils import export_all_model_outputs, save_gaussian_splat_ply, pi3_points_to_gaussians_torch
+
+    save_maps = args.save_maps
+    if save_maps or args.save_depth_exr or args.save_depth_npy or args.save_points_exr or args.save_points_npy or args.save_conf:
+        export_all_model_outputs(
+            out_dir=out_dir,
+            res=res,
+            imgs=imgs,
+            masks=masks,
+            save_splat_ply=args.ply,
+            save_standard_ply=False, # already saved above
+            save_depth_exr=args.save_depth_exr or save_maps,
+            save_depth_npy=args.save_depth_npy or save_maps,
+            save_points_exr=args.save_points_exr or save_maps,
+            save_points_npy=args.save_points_npy or save_maps,
+            save_poses=args.save_poses or save_maps,
+            save_conf=args.save_conf or save_maps,
+            is_indoor=args.ply_is_indoor,
+            stride=args.ply_stride,
+            global_scale=args.ply_scale,
+            disc_thickness=args.ply_thickness,
+            min_depth=args.ply_min_depth,
+            max_depth=args.ply_max_depth
+        )
+    elif args.ply:
+        splat_file = args.splat_path if args.splat_path else os.path.join(out_dir, "splat.ply")
+        flat_pts, flat_rgb, flat_scs, flat_qts, flat_op = pi3_points_to_gaussians_torch(
+            points=res['points'][0],
+            imgs=imgs[0],
+            conf=res['conf'][0],
+            masks=masks,
+            stride=args.ply_stride,
+            is_indoor=args.ply_is_indoor,
+            global_scale=args.ply_scale,
+            disc_thickness=args.ply_thickness,
+            min_depth=args.ply_min_depth,
+            max_depth=args.ply_max_depth
+        )
+        save_gaussian_splat_ply(splat_file, flat_pts, flat_rgb, flat_scs, flat_qts, flat_op)
+
     print("Done.")
